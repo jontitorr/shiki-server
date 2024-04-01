@@ -114,6 +114,8 @@ pub struct CreateMessage {
 	/// Message creation time
 	#[serde(default = "current_utc_timestamp", skip_deserializing)]
 	pub created_at: usize,
+	/// Attachments' IDs (previously uploaded from the API)
+	pub attachments: Option<Vec<i64>>,
 }
 
 fn current_utc_timestamp() -> usize {

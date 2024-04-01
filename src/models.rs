@@ -6,6 +6,17 @@ use redis_derive::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use std::future::ready;
 
+#[derive(Clone, Debug, Deserialize, Serialize, ToRedisArgs, FromRedisValue)]
+pub struct Attachment {
+	pub id: i64,
+	pub filename: String,
+	pub size: usize,
+	pub url: String,
+	pub width: u32,
+	pub height: u32,
+	pub content_type: String,
+}
+
 #[derive(
 	Clone,
 	Debug,

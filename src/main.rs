@@ -7,10 +7,10 @@ use actix_session::{
 };
 use actix_web::{
 	cookie::Key,
-	error, http,
+	error,
+	http::{self, Uri},
 	middleware::Logger,
-	web::{self},
-	App, HttpResponse, HttpServer,
+	web, App, HttpResponse, HttpServer,
 };
 use dotenv::dotenv;
 use futures_util::{future, lock::Mutex};
@@ -40,6 +40,12 @@ mod speexdsp;
 mod utils;
 mod ws;
 
+pub struct CloudinaryConfig {
+	pub cloud_name: String,
+	pub api_key: String,
+	pub api_secret: String,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 	match dotenv() {
@@ -53,8 +59,20 @@ async fn main() -> std::io::Result<()> {
 		env_logger::Env::new().default_filter_or("debug"),
 	);
 
+	let cloudinary = Arc::new(CloudinaryConfig {
+		cloud_name: env::var("CLOUDINARY_CLOUD_NAME")
+			.expect("CLOUDINARY_CLOUD_NAME must be set"),
+		api_key: env::var("CLOUDINARY_API_KEY")
+			.expect("CLOUDINARY_API_KEY must be set"),
+		api_secret: env::var("CLOUDINARY_API_SECRET")
+			.expect("CLOUDINARY_API_SECRET must be set"),
+	});
 	let session_key = env::var("SESSION_KEY")
 		.expect("You must set the SESSION_KEY environment var!");
+	let server_url = env::var("SERVER_URL")
+		.unwrap_or("http://localhost:8080".to_string())
+		.parse::<Uri>()
+		.expect("Invalid SERVER_URL");
 
 	let db = Client::with_options(
 		ClientOptions::parse_with_resolver_config(
@@ -105,7 +123,7 @@ async fn main() -> std::io::Result<()> {
 	let session_endpoint =
 		web::Data::new(Mutex::new(webrtc_server.session_endpoint()));
 
-	log::info!("starting HTTP server at http://localhost:8080");
+	log::info!("starting HTTP server at {server_url}");
 
 	let http_fut = HttpServer::new(move || {
 		let cors = Cors::default()
@@ -123,6 +141,7 @@ async fn main() -> std::io::Result<()> {
 			.max_age(3600);
 
 		App::new()
+			.app_data(web::Data::from(cloudinary.clone()))
 			.app_data(web::Data::from(app_state.clone()))
 			.app_data(web::Data::new(server.clone()))
 			.app_data(session_endpoint.clone())
@@ -152,7 +171,10 @@ async fn main() -> std::io::Result<()> {
 			})
 	})
 	.workers(2)
-	.bind(("0.0.0.0", 8080))?
+	.bind((
+		server_url.host().expect("SERVER_URL must have a host"),
+		server_url.port_u16().expect("SERVER_URL must have a port"),
+	))?
 	.run();
 
 	let webrtc_server = Arc::new(Mutex::new(webrtc_server));

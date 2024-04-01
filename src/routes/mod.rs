@@ -9,6 +9,7 @@ use actix_web::web;
 use mongodb::Client;
 
 pub const DB_NAME: &str = "shiki";
+pub const ATTACHMENT_COLL_NAME: &str = "attachments";
 pub const CHANNEL_COLL_NAME: &str = "channels";
 pub const MESSAGE_COLL_NAME: &str = "messages";
 pub const USER_COLL_NAME: &str = "users";

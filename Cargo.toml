@@ -44,10 +44,15 @@ webrtc-unreliable = "0.5.3"
 mime = "0.3.17"
 actix-session = { version = "0.8.0", features = [
     "redis-actor-session",
-    "redis-rs-tls-session"
+    "redis-rs-tls-session",
 ] }
 deadpool-redis = "0.14.0"
 redis-derive = "0.1.7"
+cloudinary = "0.4.0"
+image = "0.25.1"
+sanitize-filename = "0.5.0"
+lazy_static = "1.4.0"
+actix-multipart = { version = "0.6.1", features = ["tempfile"] }
 
 [build-dependencies]
 bindgen = "0.68.1"

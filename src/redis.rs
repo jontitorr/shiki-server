@@ -3,7 +3,10 @@
 // Methods which abstract the fetching of our data from redis, all data should be fetched first on redis, and fallback to the database.
 use crate::{
 	models,
-	routes::{CHANNEL_COLL_NAME, DB_NAME, MESSAGE_COLL_NAME, USER_COLL_NAME},
+	routes::{
+		ATTACHMENT_COLL_NAME, CHANNEL_COLL_NAME, DB_NAME, MESSAGE_COLL_NAME,
+		USER_COLL_NAME,
+	},
 };
 use anyhow::Result;
 use deadpool_redis::{
@@ -59,6 +62,55 @@ impl RedisFetcher {
 
 	async fn create_connection(&self) -> Result<Connection> {
 		self.session.get().await.map_err(|e| anyhow::anyhow!(e))
+	}
+
+	pub async fn fetch_attachments(
+		&self, ids: Option<&[i64]>,
+	) -> Result<Vec<models::Attachment>> {
+		let mut conn = self.create_connection().await?;
+		let mut attachments = Vec::new();
+		let mut doc = None;
+
+		if let Some(ids) = ids {
+			let mut ids_to_fetch = Vec::new();
+
+			for id in ids {
+				if let Ok(attachment) = get_value::<models::Attachment>(
+					&mut conn,
+					&format!("attachment_{id}"),
+				)
+				.await
+				{
+					attachments.push(attachment);
+				} else {
+					ids_to_fetch.push(id);
+				}
+			}
+
+			if ids_to_fetch.is_empty() {
+				return Ok(attachments);
+			}
+
+			doc = Some(doc! {"id": {"$in": ids_to_fetch}});
+		}
+
+		let res = self
+			.client
+			.database(DB_NAME)
+			.collection::<models::Attachment>(ATTACHMENT_COLL_NAME)
+			.find(doc, None)
+			.await;
+
+		match res {
+			Ok(mut cursor) => {
+				while let Some(attachment) = cursor.try_next().await? {
+					attachments.push(attachment);
+				}
+
+				Ok(attachments)
+			}
+			Err(e) => Err(anyhow::anyhow!(e)),
+		}
 	}
 
 	pub async fn fetch_channels(
@@ -280,6 +332,27 @@ impl RedisFetcher {
 		}
 
 		Ok(users)
+	}
+
+	pub async fn insert_attachment(
+		&self, attachment: models::Attachment,
+	) -> Result<()> {
+		let mut conn = self.create_connection().await?;
+
+		set_value(
+			&mut conn,
+			&format!("attachment_{}", attachment.id),
+			&attachment,
+		)
+		.await?;
+
+		self.client
+			.database(DB_NAME)
+			.collection::<models::Attachment>(ATTACHMENT_COLL_NAME)
+			.insert_one(attachment, None)
+			.await
+			.map(|_| ())
+			.map_err(|e| anyhow::anyhow!(e))
 	}
 
 	pub async fn insert_channel(&self, channel: models::Channel) -> Result<()> {

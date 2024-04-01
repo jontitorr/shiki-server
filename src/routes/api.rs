@@ -1,14 +1,20 @@
 use super::middleware::Auth;
 use crate::{
-	models::{Channel, Message, User},
+	models::{Attachment, Channel, Message, User},
 	redis::{ModifyUser, RedisFetcher},
 	routes::{DB_NAME, MESSAGE_COLL_NAME},
 	ws::server::{self, CreateMessage, Join, ListChannels, ShikiServer},
+	CloudinaryConfig,
 };
 use actix::Addr;
+use actix_multipart::form::tempfile::TempFile;
+use actix_multipart::form::MultipartForm;
 use actix_web::{get, patch, post, web, HttpResponse, Responder};
+use cloudinary::upload::{Source, Upload, UploadOptions};
 use futures::TryStreamExt;
 use futures_util::lock::Mutex;
+use image::GenericImageView;
+use lazy_static::lazy_static;
 use mongodb::{bson::doc, options::FindOptions, Client};
 use serde::{Deserialize, Serialize};
 use snowflake::SnowflakeIdGenerator;
@@ -16,6 +22,7 @@ use std::{
 	collections::{HashMap, HashSet},
 	sync::atomic::{AtomicUsize, Ordering},
 };
+
 use validator::Validate;
 
 /// Displays state
@@ -23,6 +30,158 @@ use validator::Validate;
 async fn get_count(count: web::Data<AtomicUsize>) -> impl Responder {
 	let current_count = count.load(Ordering::SeqCst);
 	format!("Visitors: {current_count}")
+}
+
+#[derive(MultipartForm)]
+struct CreateAttachment {
+	file: TempFile,
+}
+
+lazy_static! {
+	static ref VALID_CONTENT_TYPES: HashSet<&'static str> = {
+		let mut set = HashSet::new();
+		set.insert("image/png");
+		set.insert("image/jpeg");
+		set.insert("image/gif");
+		set.insert("image/webp");
+		set
+	};
+}
+
+// TODO: Might just make a default HttpResponse with the INTERNAL_ERROR.
+const INTERNAL_ERROR: &str = "Something went wrong";
+
+#[derive(Serialize)]
+struct AttachmentResponse {
+	id: i64,
+	url: String,
+}
+
+/// Creates an attachment/Uploads an image. Should restrict to images only for now.
+#[post("/channels/{channel_id}/attachments")]
+async fn create_attachment(
+	cloudinary: web::Data<CloudinaryConfig>, channel_id: web::Path<i64>,
+	form: MultipartForm<CreateAttachment>, fetcher: web::Data<RedisFetcher>,
+	snowflake_gen: web::Data<Mutex<SnowflakeIdGenerator>>,
+) -> HttpResponse {
+	const MAX_FILE_SIZE: usize = 1024 * 1024 * 5;
+
+	// Check if the channel exists.
+	match fetcher.fetch_channels(Some(&[channel_id.clone()])).await {
+		Ok(channels) => {
+			if channels.is_empty() {
+				return HttpResponse::NotFound().finish();
+			}
+		}
+		_ => return HttpResponse::NotFound().finish(),
+	}
+
+	// Validate the file
+	match form.file.size {
+		0 => return HttpResponse::BadRequest().finish(),
+		length if length > MAX_FILE_SIZE => {
+			return HttpResponse::BadRequest().body(format!(
+				"The uploaded file is too large. Maximum size is {} bytes.",
+				MAX_FILE_SIZE
+			));
+		}
+		_ => {}
+	};
+
+	let content_type =
+		match form.file.content_type.as_ref().map(|s| s.to_string()) {
+			Some(content_type) => content_type,
+			None => return HttpResponse::BadRequest().body(INTERNAL_ERROR),
+		};
+
+	if !VALID_CONTENT_TYPES.contains(&content_type.as_str()) {
+		return HttpResponse::BadRequest().body(INTERNAL_ERROR);
+	}
+
+	let (format, img) = match tokio::fs::read(form.file.file.path()).await {
+		Ok(bytes) => {
+			match (image::guess_format(&bytes), image::load_from_memory(&bytes))
+			{
+				(Ok(format), Ok(img)) => (Some(format), img),
+				_ => return HttpResponse::BadRequest().body(INTERNAL_ERROR),
+			}
+		}
+		_ => return HttpResponse::BadRequest().body(INTERNAL_ERROR),
+	};
+
+	if format.is_none() {
+		return HttpResponse::BadRequest().body(INTERNAL_ERROR);
+	}
+
+	let (w, h) = img.dimensions();
+
+	// Max Height 512 (for storage reasons)
+	if h > 512 {
+		let ratio = 512_f32 / h as f32;
+		let new_w = (w as f32 * ratio) as u32;
+
+		match img
+			.resize(new_w, 512, image::imageops::FilterType::Lanczos3)
+			.save_with_format(form.file.file.path(), format.unwrap())
+		{
+			Ok(_) => {}
+			Err(err) => {
+				return HttpResponse::InternalServerError()
+					.body(err.to_string());
+			}
+		}
+	}
+
+	let sanitized = match form.file.file_name {
+		Some(ref file_name) => sanitize_filename::sanitize(file_name),
+		None => {
+			return HttpResponse::InternalServerError()
+				.body("Missing file name")
+		}
+	};
+
+	let id = snowflake_gen.lock().await.real_time_generate();
+	let mut file_ext = String::new();
+	let bucket_name = format!("attachments/{}/{}/{}", channel_id, id, {
+		if let Some(idx) = sanitized.rfind('.') {
+			file_ext = sanitized[idx..].to_string();
+			sanitized[..idx].to_string()
+		} else {
+			sanitized.clone()
+		}
+	});
+	let options = UploadOptions::new().set_public_id(bucket_name.clone());
+	let upload = Upload::new(
+		cloudinary.api_key.clone(),
+		cloudinary.cloud_name.clone(),
+		cloudinary.api_secret.clone(),
+	);
+
+	if let Err(_) = upload
+		.image(Source::Path(form.file.file.path().to_path_buf()), &options)
+		.await
+	{
+		return HttpResponse::InternalServerError().body(INTERNAL_ERROR);
+	}
+
+	let attachment = Attachment {
+		id,
+		filename: sanitized.clone(),
+		size: form.file.size,
+		url: format!(
+			// TODO: Make customizable.
+			"https://cdn.shiki.space/{}{}",
+			bucket_name, file_ext
+		),
+		width: w,
+		height: h,
+		content_type,
+	};
+
+	match fetcher.insert_attachment(attachment.clone()).await {
+		Ok(_) => HttpResponse::Ok().json(attachment),
+		_ => HttpResponse::InternalServerError().body(INTERNAL_ERROR),
+	}
 }
 
 /// Shows all the channels available
@@ -59,8 +218,7 @@ async fn create_channel(
 	let res = fetcher.insert_channel(channel).await;
 
 	if res.is_err() {
-		return HttpResponse::InternalServerError()
-			.body("Something went wrong");
+		return HttpResponse::InternalServerError().body(INTERNAL_ERROR);
 	}
 
 	match srv
@@ -182,13 +340,12 @@ async fn get_messages(
 			Ok(res) => res,
 			Err(_) => {
 				return HttpResponse::InternalServerError()
-					.body("Something went wrong");
+					.body(INTERNAL_ERROR);
 			}
 		},
 
 		Err(_) => {
-			return HttpResponse::InternalServerError()
-				.body("Something went wrong");
+			return HttpResponse::InternalServerError().body(INTERNAL_ERROR);
 		}
 	};
 
@@ -209,8 +366,7 @@ async fn get_messages(
 			users.into_iter().map(|user| (user.id, user.into())).collect()
 		}
 		Err(_) => {
-			return HttpResponse::InternalServerError()
-				.body("Something went wrong");
+			return HttpResponse::InternalServerError().body(INTERNAL_ERROR);
 		}
 	};
 
@@ -270,6 +426,19 @@ async fn create_message(
 ) -> HttpResponse {
 	let mut data = data.into_inner();
 
+	// Check if the referred attachments exist.
+	if let Some(attachments) = &mut data.attachments {
+		let res = fetcher
+			.fetch_attachments(Some(attachments))
+			.await
+			.unwrap_or_default();
+
+		if res.len() != attachments.len() {
+			return HttpResponse::BadRequest()
+				.body("Attachments do not exist!");
+		}
+	}
+
 	data.id = snowflake_gen.lock().await.real_time_generate();
 	data.channel_id = channel_id.into_inner();
 	data.author = server::User {
@@ -282,8 +451,7 @@ async fn create_message(
 	let res = fetcher.insert_message(Message::from(data.clone())).await;
 
 	if res.is_err() {
-		return HttpResponse::InternalServerError()
-			.body("Something went wrong");
+		return HttpResponse::InternalServerError().body(INTERNAL_ERROR);
 	}
 
 	// TODO: Refactor this so the response is not dependent on the gateway's response. Messages should still return 200s even if the gateway were to be down.
@@ -292,7 +460,7 @@ async fn create_message(
 		Ok(None) => HttpResponse::BadRequest().body("Channel does not exist!"),
 		Err(e) => {
 			log::error!("Failed to send message: {:?}", e);
-			HttpResponse::InternalServerError().body("Something went wrong")
+			HttpResponse::InternalServerError().body(INTERNAL_ERROR)
 		}
 	}
 }
@@ -317,7 +485,7 @@ async fn modify_user(
 		}),
 		Err(err) => {
 			log::error!("{:?}", err);
-			HttpResponse::InternalServerError().body("Something went wrong")
+			HttpResponse::InternalServerError().body(INTERNAL_ERROR)
 		}
 	}
 }
@@ -326,6 +494,7 @@ pub fn routes(client: &RedisFetcher, cfg: &mut web::ServiceConfig) {
 	cfg.service(
 		web::scope("/api")
 			.service(get_count)
+			.service(create_attachment)
 			.service(get_channels_list)
 			.service(create_channel)
 			.service(join_channel)
