@@ -85,7 +85,7 @@ impl RedisFetcher {
 			}
 
 			if ids_to_fetch.is_empty() {
-				return Ok(vec![]);
+				return Ok(channels);
 			}
 
 			doc = Some(doc! {"id": {"$in": ids_to_fetch}});
