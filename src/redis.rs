@@ -64,31 +64,34 @@ impl RedisFetcher {
 		self.session.get().await.map_err(|e| anyhow::anyhow!(e))
 	}
 
-	pub async fn fetch_attachments(
-		&self, ids: Option<&[i64]>,
-	) -> Result<Vec<models::Attachment>> {
+	async fn fetch_items_impl<
+		T: deadpool_redis::redis::FromRedisValue + serde::de::DeserializeOwned,
+	>(
+		&self, ids: Option<&[i64]>, coll_name: &str, id_prefix: &str,
+	) -> Result<Vec<T>> {
+		if ids.is_some() && ids.unwrap().is_empty() {
+			return Ok(Vec::new());
+		}
+
 		let mut conn = self.create_connection().await?;
-		let mut attachments = Vec::new();
+		let mut items = Vec::new();
 		let mut doc = None;
 
 		if let Some(ids) = ids {
 			let mut ids_to_fetch = Vec::new();
 
 			for id in ids {
-				if let Ok(attachment) = get_value::<models::Attachment>(
-					&mut conn,
-					&format!("attachment_{id}"),
-				)
-				.await
+				if let Ok(item) =
+					get_value(&mut conn, &format!("{id_prefix}{id}")).await
 				{
-					attachments.push(attachment);
+					items.push(item);
 				} else {
 					ids_to_fetch.push(id);
 				}
 			}
 
 			if ids_to_fetch.is_empty() {
-				return Ok(attachments);
+				return Ok(items);
 			}
 
 			doc = Some(doc! {"id": {"$in": ids_to_fetch}});
@@ -97,123 +100,38 @@ impl RedisFetcher {
 		let res = self
 			.client
 			.database(DB_NAME)
-			.collection::<models::Attachment>(ATTACHMENT_COLL_NAME)
+			.collection::<T>(coll_name)
 			.find(doc, None)
 			.await;
 
 		match res {
 			Ok(mut cursor) => {
-				while let Some(attachment) = cursor.try_next().await? {
-					attachments.push(attachment);
+				while let Some(item) = cursor.try_next().await? {
+					items.push(item);
 				}
 
-				Ok(attachments)
+				Ok(items)
 			}
 			Err(e) => Err(anyhow::anyhow!(e)),
 		}
 	}
 
+	pub async fn fetch_attachments(
+		&self, ids: Option<&[i64]>,
+	) -> Result<Vec<models::Attachment>> {
+		self.fetch_items_impl(ids, ATTACHMENT_COLL_NAME, "attachment_").await
+	}
+
 	pub async fn fetch_channels(
 		&self, ids: Option<&[i64]>,
 	) -> Result<Vec<models::Channel>> {
-		let mut conn = self.create_connection().await?;
-		let mut channels = Vec::new();
-		let mut doc = None;
-
-		if let Some(ids) = ids {
-			let mut ids_to_fetch = Vec::new();
-
-			for id in ids {
-				if let Ok(channel) = get_value::<models::Channel>(
-					&mut conn,
-					&format!("channel_{id}"),
-				)
-				.await
-				{
-					channels.push(channel);
-				} else {
-					ids_to_fetch.push(id);
-				}
-			}
-
-			if ids_to_fetch.is_empty() {
-				return Ok(channels);
-			}
-
-			doc = Some(doc! {"id": {"$in": ids_to_fetch}});
-		}
-
-		let res = self
-			.client
-			.database(DB_NAME)
-			.collection::<models::Channel>(CHANNEL_COLL_NAME)
-			.find(doc, None)
-			.await;
-
-		match res {
-			Ok(mut cursor) => {
-				while let Some(channel) = cursor.try_next().await? {
-					set_value(
-						&mut conn,
-						&format!("channel_{}", channel.id),
-						&channel,
-					)
-					.await?;
-					channels.push(channel);
-				}
-
-				Ok(channels)
-			}
-			Err(e) => Err(e.into()),
-		}
+		self.fetch_items_impl(ids, CHANNEL_COLL_NAME, "channel_").await
 	}
 
 	pub async fn fetch_messages(
 		&self, ids: &[i64],
 	) -> Result<Vec<models::Message>> {
-		let mut conn = self.create_connection().await?;
-		let mut ids_to_fetch = Vec::new();
-		let mut messages = Vec::new();
-
-		for id in ids {
-			if let Ok(message) = get_value::<models::Message>(
-				&mut conn,
-				&format!("message_{id}"),
-			)
-			.await
-			{
-				messages.push(message);
-			} else {
-				ids_to_fetch.push(id);
-			}
-		}
-
-		if ids_to_fetch.is_empty() {
-			return Ok(messages);
-		}
-
-		let res = self
-			.client
-			.database(DB_NAME)
-			.collection::<models::Message>(USER_COLL_NAME)
-			.find(doc! {"id": {"$in": ids_to_fetch}}, None)
-			.await;
-
-		match res {
-			Ok(mut cursor) => {
-				while let Some(message) = cursor.try_next().await? {
-					set_value(
-						&mut conn,
-						&format!("message_{}", message.id),
-						&message,
-					)
-					.await?;
-					messages.push(message);
-				}
-				Ok(messages)
-			}
-			Err(e) => Err(e.into()),
-		}
+		self.fetch_items_impl(Some(ids), MESSAGE_COLL_NAME, "message_").await
 	}
 
 	pub async fn fetch_user(
@@ -292,46 +210,7 @@ impl RedisFetcher {
 	pub async fn fetch_users(
 		&self, ids: Option<&[i64]>,
 	) -> Result<Vec<models::User>> {
-		let mut conn = self.create_connection().await?;
-		let mut doc = None;
-		let mut users = Vec::new();
-
-		if let Some(ids) = ids {
-			let mut ids_to_fetch = Vec::new();
-
-			for id in ids {
-				if let Ok(user) =
-					get_value::<models::User>(&mut conn, &format!("user_{id}"))
-						.await
-				{
-					users.push(user);
-				} else {
-					ids_to_fetch.push(id);
-				}
-			}
-
-			if ids_to_fetch.is_empty() {
-				return Ok(users);
-			}
-
-			doc = Some(doc! {"id": {"$in": ids_to_fetch}});
-		}
-
-		let db_users = self
-			.client
-			.database(DB_NAME)
-			.collection::<models::User>(USER_COLL_NAME)
-			.find(doc, None)
-			.await?
-			.try_collect::<Vec<_>>()
-			.await?;
-
-		for user in db_users {
-			set_value(&mut conn, &format!("user_{}", user.id), &user).await?;
-			users.push(user);
-		}
-
-		Ok(users)
+		self.fetch_items_impl(ids, USER_COLL_NAME, "user_").await
 	}
 
 	pub async fn insert_attachment(
