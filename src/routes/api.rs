@@ -67,7 +67,7 @@ async fn create_attachment(
 	const MAX_FILE_SIZE: usize = 1024 * 1024 * 5;
 
 	// Check if the channel exists.
-	match fetcher.fetch_channels(Some(&[channel_id.clone()])).await {
+	match fetcher.fetch_channels(Some(&[*channel_id])).await {
 		Ok(channels) => {
 			if channels.is_empty() {
 				return HttpResponse::NotFound().finish();
@@ -142,24 +142,31 @@ async fn create_attachment(
 
 	let id = snowflake_gen.lock().await.real_time_generate();
 	let mut file_ext = String::new();
-	let bucket_name = format!("attachments/{}/{}/{}", channel_id, id, {
+	let filename_noext = {
 		if let Some(idx) = sanitized.rfind('.') {
 			file_ext = sanitized[idx..].to_string();
 			sanitized[..idx].to_string()
 		} else {
 			sanitized.clone()
 		}
-	});
-	let options = UploadOptions::new().set_public_id(bucket_name.clone());
+	};
+	// We don't want to create an additional folder.
+	let options = UploadOptions::new().set_public_id(format!(
+		"attachments/{}/{}-{}",
+		channel_id,
+		id,
+		filename_noext.clone()
+	));
 	let upload = Upload::new(
 		cloudinary.api_key.clone(),
 		cloudinary.cloud_name.clone(),
 		cloudinary.api_secret.clone(),
 	);
 
-	if let Err(_) = upload
+	if upload
 		.image(Source::Path(form.file.file.path().to_path_buf()), &options)
 		.await
+		.is_err()
 	{
 		return HttpResponse::InternalServerError().body(INTERNAL_ERROR);
 	}
@@ -171,7 +178,8 @@ async fn create_attachment(
 		url: format!(
 			// TODO: Make customizable.
 			"https://cdn.shiki.space/{}{}",
-			bucket_name, file_ext
+			format!("attachments/{}/{}/{}", channel_id, id, filename_noext),
+			file_ext
 		),
 		width: w,
 		height: h,
@@ -286,6 +294,9 @@ pub struct GetMessage {
 	pub created_at: usize,
 	/// User who sent the message
 	pub author: server::User,
+	/// Attachments of the message
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub attachments: Option<Vec<Attachment>>,
 }
 
 /// Fetches the messages in a channel
@@ -349,7 +360,20 @@ async fn get_messages(
 		}
 	};
 
-	// Make a set of all of the user IDs mentioned in the messages.
+	let attachment_ids: Vec<i64> = messages
+		.iter()
+		.filter_map(|msg| msg.attachments.as_ref())
+		.flat_map(|attachments| attachments.iter().cloned())
+		.collect();
+
+	let attachments = fetcher
+		.fetch_attachments(Some(&attachment_ids))
+		.await
+		.unwrap_or_default()
+		.into_iter()
+		.map(|res| (res.id, res))
+		.collect::<HashMap<_, _>>();
+
 	let user_ids = messages
 		.iter()
 		.map(|msg| msg.author_id)
@@ -409,6 +433,11 @@ async fn get_messages(
 				content: msg.content,
 				created_at: msg.created_at,
 				author,
+				attachments: msg.attachments.map(|ids| {
+					ids.into_iter()
+						.filter_map(|id| attachments.get(&id).cloned())
+						.collect::<Vec<Attachment>>()
+				}),
 			}
 		})
 		.collect();
@@ -437,6 +466,8 @@ async fn create_message(
 			return HttpResponse::BadRequest()
 				.body("Attachments do not exist!");
 		}
+
+		data.attachments_raw = Some(res);
 	}
 
 	data.id = snowflake_gen.lock().await.real_time_generate();

@@ -1,12 +1,21 @@
-use crate::ws::server::CreateMessage;
+use crate::ws::server::{current_utc_timestamp, CreateMessage};
 use actix_web::{FromRequest, HttpMessage};
 use chrono::Utc;
-use deadpool_redis::redis;
+use deadpool_redis::redis::{self, FromRedisValue, RedisWrite, ToRedisArgs};
 use redis_derive::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use std::future::ready;
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToRedisArgs, FromRedisValue)]
+#[derive(
+	Clone,
+	Debug,
+	PartialEq,
+	Eq,
+	Deserialize,
+	Serialize,
+	ToRedisArgs,
+	FromRedisValue,
+)]
 pub struct Attachment {
 	pub id: i64,
 	pub filename: String,
@@ -55,17 +64,7 @@ impl Channel {
 	}
 }
 
-#[derive(
-	Clone,
-	Debug,
-	PartialEq,
-	Eq,
-	Deserialize,
-	Serialize,
-	Default,
-	ToRedisArgs,
-	FromRedisValue,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct Message {
 	/// The id of the message
 	pub id: i64,
@@ -76,26 +75,79 @@ pub struct Message {
 	/// The content of the message
 	pub content: String,
 	/// Unix timestamp for when the message was created
+	#[serde(default = "current_utc_timestamp")]
 	pub created_at: usize,
+	/// Attachments of the message
+	pub attachments: Option<Vec<i64>>,
 }
 
-impl Message {
-	pub fn new(
-		id: i64, channel_id: i64, author_id: i64, content: &str,
-	) -> Self {
-		Message {
-			id,
-			channel_id,
-			author_id,
-			content: content.to_string(),
-			created_at: Utc::now().timestamp() as usize,
+macro_rules! invalid_type_error_inner {
+	($v:expr, $det:expr) => {
+		redis::RedisError::from((
+			redis::ErrorKind::TypeError,
+			"Response was of incompatible type",
+			format!("{:?} (response was {:?})", $det, $v),
+		))
+	};
+}
+
+impl ToRedisArgs for Message {
+	fn write_redis_args<W>(&self, out: &mut W) -> ()
+	where
+		W: ?Sized + RedisWrite,
+	{
+		for field in serde_json::to_value(self).unwrap().as_object().unwrap() {
+			field.0.write_redis_args(out);
+			field.1.to_string().write_redis_args(out);
+		}
+	}
+}
+
+impl FromRedisValue for Message {
+	fn from_redis_value(v: &redis::Value) -> redis::RedisResult<Self> {
+		match *v {
+			redis::Value::Nil => Ok(Default::default()),
+			_ => {
+				let res = v
+					.as_map_iter()
+					.ok_or_else(|| {
+						invalid_type_error_inner!(
+							v,
+							"Response type not hashmap compatible"
+						)
+					})?
+					.map(|(k, v)| {
+						let s: String = FromRedisValue::from_redis_value(v)?;
+
+						Ok((
+							FromRedisValue::from_redis_value(k)?,
+							serde_json::from_str(s.as_str())
+								.map_err(|e| invalid_type_error_inner!(v, e))?,
+						))
+					})
+					.collect::<Vec<_>>()
+					.into_iter()
+					.collect::<redis::RedisResult<
+						std::collections::HashMap<String, serde_json::Value>,
+					>>()?;
+
+				Ok(serde_json::from_value::<Self>(serde_json::json!(res))
+					.map_err(|e| invalid_type_error_inner!(v, e))?)
+			}
 		}
 	}
 }
 
 impl From<CreateMessage> for Message {
 	fn from(msg: CreateMessage) -> Self {
-		Self::new(msg.id, msg.channel_id, msg.author.id, &msg.content)
+		Self {
+			id: msg.id,
+			channel_id: msg.channel_id,
+			author_id: msg.author.id,
+			content: msg.content,
+			created_at: msg.created_at,
+			attachments: msg.attachments,
+		}
 	}
 }
 

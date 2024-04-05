@@ -1,5 +1,5 @@
 use super::server::{Channel, CreateMessage};
-use crate::ws::server::User;
+use crate::{models, ws::server::User};
 use actix::Message;
 use derives::HasOpcode;
 use serde::{Deserialize, Serialize, Serializer};
@@ -70,6 +70,8 @@ pub struct MessageCreate {
 	pub author: User,
 	/// The creation date of the message
 	pub created_at: usize,
+	/// The attachments of the message.
+	pub attachments: Option<Vec<models::Attachment>>,
 }
 
 impl From<CreateMessage> for MessageCreate {
@@ -80,6 +82,7 @@ impl From<CreateMessage> for MessageCreate {
 			channel_id: msg.channel_id,
 			author: msg.author,
 			created_at: msg.created_at,
+			attachments: msg.attachments_raw,
 		}
 	}
 }

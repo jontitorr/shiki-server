@@ -115,10 +115,14 @@ pub struct CreateMessage {
 	#[serde(default = "current_utc_timestamp", skip_deserializing)]
 	pub created_at: usize,
 	/// Attachments' IDs (previously uploaded from the API)
+	#[serde(skip_serializing)]
 	pub attachments: Option<Vec<i64>>,
+	/// For storing the actual Attachment objects (not to be deserialized)
+	#[serde(rename(serialize = "attachments"), skip_deserializing)]
+	pub attachments_raw: Option<Vec<models::Attachment>>,
 }
 
-fn current_utc_timestamp() -> usize {
+pub fn current_utc_timestamp() -> usize {
 	let utc_now = Utc::now();
 	utc_now.timestamp() as usize
 }
