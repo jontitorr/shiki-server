@@ -3,6 +3,7 @@ version: "3.4"
 services:
   db:
     image: mongo
+    restart: always
     ports:
       - "27017:27017"
     volumes:
@@ -19,6 +20,7 @@ services:
 
   redis:
     image: redis
+    restart: always
     ports:
       - "6379:6379"
     volumes:
@@ -30,19 +32,19 @@ services:
       retries: 3
       start_period: 5s
 
-  shiki:
-    build:
-      context: .
-      target: final
-    environment:
-      CLIENT_URL: http://localhost:5173
-      MONGODB_URI: mongodb://root:shiki@db:27017
-      REDIS_URL: redis:6379
-      RTC_PUBLIC_ADDR: 0.0.0.0:8081
-      # Generate your own using `openssl rand -hex 32`
-      SESSION_KEY: 6863fd831219d6e0ec5712ffb40950569282f580c22ee53b6bd908d8fc8809e9
-    depends_on:
-      - db
-      - redis
-    ports:
-      - 8080:8080
+  # shiki:
+  #   build:
+  #     context: .
+  #     target: final
+  #   environment:
+  #     CLIENT_URL: http://localhost:5173
+  #     MONGODB_URI: mongodb://root:shiki@db:27017
+  #     REDIS_URL: redis:6379
+  #     RTC_PUBLIC_ADDR: 0.0.0.0:8081
+  #     # Generate your own using `openssl rand -hex 32`
+  #     SESSION_KEY: 6863fd831219d6e0ec5712ffb40950569282f580c22ee53b6bd908d8fc8809e9
+  #   depends_on:
+  #     - db
+  #     - redis
+  #   ports:
+  #     - 8080:8080
