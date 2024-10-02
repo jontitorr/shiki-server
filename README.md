@@ -24,7 +24,7 @@ This is the backend service for Shiki, a real-time chat application built with R
 
 ## Setup
 
-1. lone the repository
+1. Clone the repository
 2. Create a .env file in the root directory with the following variables:
 
 ```bash
