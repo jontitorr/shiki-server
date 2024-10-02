@@ -2,7 +2,6 @@
 name = "shiki-server"
 version = "0.4.0"
 edition = "2021"
-build = "build.rs"
 
 [[bin]]
 name = "shiki-server"
@@ -53,7 +52,3 @@ image = "0.25.1"
 sanitize-filename = "0.5.0"
 lazy_static = "1.4.0"
 actix-multipart = { version = "0.6.1", features = ["tempfile"] }
-
-[build-dependencies]
-bindgen = "0.68.1"
-cmake = "0.1.31"

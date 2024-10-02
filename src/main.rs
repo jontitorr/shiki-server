@@ -1,42 +1,61 @@
-use crate::{redis::RedisFetcher, ws::server::ShikiServer};
+use crate::{
+	redis::RedisFetcher,
+	ws::server::ShikiServer,
+};
 use actix::*;
 use actix_cors::Cors;
 use actix_session::{
-	storage::{RedisSessionStore, SessionStore},
+	storage::{
+		RedisSessionStore,
+		SessionStore,
+	},
 	SessionMiddleware,
 };
 use actix_web::{
 	cookie::Key,
 	error,
-	http::{self, Uri},
+	http::{
+		self,
+		Uri,
+	},
 	middleware::Logger,
-	web, App, HttpResponse, HttpServer,
+	web,
+	App,
+	HttpResponse,
+	HttpServer,
 };
 use dotenv::dotenv;
-use futures_util::{future, lock::Mutex};
+use futures_util::{
+	future,
+	lock::Mutex,
+};
 use mongodb::{
-	options::{ClientOptions, ResolverConfig},
+	options::{
+		ClientOptions,
+		ResolverConfig,
+	},
 	Client,
 };
-use rtc::handler::Handlerr;
 use snowflake::SnowflakeIdGenerator;
 use std::{
 	collections::HashSet,
 	env,
 	net::SocketAddr,
-	sync::{atomic::AtomicUsize, Arc},
-	time::{Duration, UNIX_EPOCH},
+	sync::{
+		atomic::AtomicUsize,
+		Arc,
+	},
+	time::{
+		Duration,
+		UNIX_EPOCH,
+	},
 };
 use webrtc_unreliable::Server;
 
 mod errors;
 mod models;
-mod opus;
-mod opusfile;
 mod redis;
 mod routes;
-mod rtc;
-mod speexdsp;
 mod utils;
 mod ws;
 
@@ -170,7 +189,6 @@ async fn main() -> std::io::Result<()> {
 				routes::routes(&redis_fetcher, cfg);
 			})
 	})
-	.workers(2)
 	.bind((
 		server_url.host().expect("SERVER_URL must have a host"),
 		server_url.port_u16().expect("SERVER_URL must have a port"),
@@ -186,13 +204,6 @@ async fn main() -> std::io::Result<()> {
 
 async fn recv_spin(webrtc_server: Arc<Mutex<Server>>) -> std::io::Result<()> {
 	let mut message_buf: Vec<u8> = Vec::new();
-	let mut handler = Handlerr::new().map_err(|e| {
-		log::error!("Could not create handler: {}", e);
-		std::io::Error::new(
-			std::io::ErrorKind::Other,
-			"Could not create handler",
-		)
-	})?;
 	let mut clients = HashSet::new();
 
 	loop {
@@ -212,7 +223,6 @@ async fn recv_spin(webrtc_server: Arc<Mutex<Server>>) -> std::io::Result<()> {
 			clients.insert(remote_addr);
 
 			if let Err(e) = process_packet(
-				&mut handler,
 				&message_buf,
 				message_type,
 				webrtc_server.clone(),
@@ -228,54 +238,10 @@ async fn recv_spin(webrtc_server: Arc<Mutex<Server>>) -> std::io::Result<()> {
 }
 
 async fn process_packet(
-	_handler: &mut Handlerr, packet: &[u8],
-	message_type: webrtc_unreliable::MessageType,
+	packet: &[u8], message_type: webrtc_unreliable::MessageType,
 	webrtc_server: Arc<Mutex<Server>>, remote_addr: SocketAddr,
 	clients: &mut HashSet<SocketAddr>,
 ) -> anyhow::Result<()> {
-	// let _ = handler
-	// 	.process_packet(packet, |_packets| {
-	// 		log::debug!(
-	// 			"Got {} packets totalling {} bytes",
-	// 			_packets.len(),
-	// 			_packets.iter().map(|p| p.len()).sum::<usize>()
-	// 		);
-
-	// 		// TODO: Do something with the audio packets if we wanted to. They are
-	// decoded and resampled here. 		// let server = webrtc_server.clone();
-
-	// 		// Box::pin(async move {
-	// 		// 	let u8_slice = unsafe {
-	// 		// 		std::mem::transmute::<_, &[u8]>(packets[0].as_slice())
-	// 		// 	};
-
-	// 		// 	match server
-	// 		// 		.lock()
-	// 		// 		.await
-	// 		// 		.send(u8_slice, message_type, &remote_addr)
-	// 		// 		.await
-	// 		// 	{
-	// 		// 		Ok(_) => {
-	// 		// 			log::debug!(
-	// 		// 				"Sent {} bytes to {}",
-	// 		// 				u8_slice.len(),
-	// 		// 				remote_addr
-	// 		// 			);
-	// 		// 		}
-	// 		// 		Err(e) => {
-	// 		// 			log::error!(
-	// 		// 				"Could not send packet to {}: {}",
-	// 		// 				remote_addr,
-	// 		// 				e
-	// 		// 			);
-	// 		// 		}
-	// 		// 	}
-	// 		// })
-
-	// 		Box::pin(async move {})
-	// 	})
-	// 	.await;
-
 	let mut to_remove = vec![];
 
 	for client in clients.iter() {

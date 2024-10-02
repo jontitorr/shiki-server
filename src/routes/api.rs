@@ -1,26 +1,69 @@
 use super::middleware::Auth;
 use crate::{
-	models::{Attachment, Channel, Message, User},
-	redis::{ModifyUser, RedisFetcher},
-	routes::{DB_NAME, MESSAGE_COLL_NAME},
-	ws::server::{self, CreateMessage, Join, ListChannels, ShikiServer},
+	models::{
+		Attachment,
+		Channel,
+		Message,
+		User,
+	},
+	redis::{
+		ModifyUser,
+		RedisFetcher,
+	},
+	routes::{
+		DB_NAME,
+		MESSAGE_COLL_NAME,
+	},
+	ws::server::{
+		self,
+		CreateMessage,
+		Join,
+		ListChannels,
+		ShikiServer,
+	},
 	CloudinaryConfig,
 };
 use actix::Addr;
-use actix_multipart::form::tempfile::TempFile;
-use actix_multipart::form::MultipartForm;
-use actix_web::{get, patch, post, web, HttpResponse, Responder};
-use cloudinary::upload::{Source, Upload, UploadOptions};
+use actix_multipart::form::{
+	tempfile::TempFile,
+	MultipartForm,
+};
+use actix_web::{
+	get,
+	patch,
+	post,
+	web,
+	HttpResponse,
+	Responder,
+};
+use cloudinary::upload::{
+	Source,
+	Upload,
+	UploadOptions,
+};
 use futures::TryStreamExt;
 use futures_util::lock::Mutex;
 use image::GenericImageView;
 use lazy_static::lazy_static;
-use mongodb::{bson::doc, options::FindOptions, Client};
-use serde::{Deserialize, Serialize};
+use mongodb::{
+	bson::doc,
+	options::FindOptions,
+	Client,
+};
+use serde::{
+	Deserialize,
+	Serialize,
+};
 use snowflake::SnowflakeIdGenerator;
 use std::{
-	collections::{HashMap, HashSet},
-	sync::atomic::{AtomicUsize, Ordering},
+	collections::{
+		HashMap,
+		HashSet,
+	},
+	sync::atomic::{
+		AtomicUsize,
+		Ordering,
+	},
 };
 
 use validator::Validate;
@@ -57,7 +100,8 @@ struct AttachmentResponse {
 	url: String,
 }
 
-/// Creates an attachment/Uploads an image. Should restrict to images only for now.
+/// Creates an attachment/Uploads an image. Should restrict to images only for
+/// now.
 #[post("/channels/{channel_id}/attachments")]
 async fn create_attachment(
 	cloudinary: web::Data<CloudinaryConfig>, channel_id: web::Path<i64>,
@@ -245,7 +289,9 @@ async fn create_channel(
 }
 
 /// Joins a channel
-// NOTE: This is should be an internal feature, caused by the future addition of channel viewing permissions. Editing said permissions should allow a user to effectively "join" a channel.
+// NOTE: This is should be an internal feature, caused by the future addition of
+// channel viewing permissions. Editing said permissions should allow a user to
+// effectively "join" a channel.
 #[post("/channels/{channel_id}/join")]
 async fn join_channel(
 	channel_id: web::Path<i64>, srv: web::Data<Addr<ShikiServer>>,
@@ -485,7 +531,9 @@ async fn create_message(
 		return HttpResponse::InternalServerError().body(INTERNAL_ERROR);
 	}
 
-	// TODO: Refactor this so the response is not dependent on the gateway's response. Messages should still return 200s even if the gateway were to be down.
+	// TODO: Refactor this so the response is not dependent on the gateway's
+	// response. Messages should still return 200s even if the gateway were to
+	// be down.
 	match srv.send(data).await {
 		Ok(Some(msg)) => HttpResponse::Ok().json(msg),
 		Ok(None) => HttpResponse::BadRequest().body("Channel does not exist!"),
@@ -496,7 +544,8 @@ async fn create_message(
 	}
 }
 
-/// Modify the requester's user account settings. Returns a user object on success.
+/// Modify the requester's user account settings. Returns a user object on
+/// success.
 // TODO: Fire a User Update Gateway event.
 #[patch("/users/@me")]
 async fn modify_user(
